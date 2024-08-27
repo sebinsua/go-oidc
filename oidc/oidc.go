@@ -139,6 +139,21 @@ type providerJSON struct {
 	Algorithms    []string `json:"id_token_signing_alg_values_supported"`
 }
 
+func unmarshalProviderJSON(r *http.Response, body []byte) (*providerJSON, error) {
+    var p providerJSON
+    err := json.Unmarshal(body, &p)
+    if err == nil {
+        return &p, nil
+    }
+
+    ct := r.Header.Get("Content-Type")
+    mediaType, _, parseErr := mime.ParseMediaType(ct)
+    if parseErr == nil && mediaType == "application/json" {
+        return nil, fmt.Errorf("got Content-Type = application/json, but could not unmarshal as JSON: %v", err)
+    }
+    return nil, fmt.Errorf("expected Content-Type = application/json, got %q: %v", ct, err)
+}
+
 // supportedAlgorithms is a list of algorithms explicitly supported by this
 // package. If a provider supports other algorithms, such as HS256 or none,
 // those values won't be passed to the IDTokenVerifier.
@@ -227,8 +242,7 @@ func NewProvider(ctx context.Context, issuer string) (*Provider, error) {
 		return nil, fmt.Errorf("%s: %s", resp.Status, body)
 	}
 
-	var p providerJSON
-	err = unmarshalResp(resp, body, &p)
+	p, err := unmarshalProviderJSON(resp, body)
 	if err != nil {
 		return nil, fmt.Errorf("oidc: failed to decode provider discovery object: %v", err)
 	}

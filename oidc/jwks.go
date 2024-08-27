@@ -6,9 +6,11 @@ import (
 	"crypto/ecdsa"
 	"crypto/ed25519"
 	"crypto/rsa"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"mime"
 	"net/http"
 	"sync"
 	"time"
@@ -260,10 +262,24 @@ func (r *RemoteKeySet) updateKeys() ([]jose.JSONWebKey, error) {
 		return nil, fmt.Errorf("oidc: get keys failed: %s %s", resp.Status, body)
 	}
 
-	var keySet jose.JSONWebKeySet
-	err = unmarshalResp(resp, body, &keySet)
+	keySet, err := unmarshalJSONWebKeySet(resp, body)
 	if err != nil {
 		return nil, fmt.Errorf("oidc: failed to decode keys: %v %s", err, body)
 	}
+
 	return keySet.Keys, nil
+}
+
+func unmarshalJSONWebKeySet(r *http.Response, body []byte) (*jose.JSONWebKeySet, error) {
+    var keySet jose.JSONWebKeySet
+    err := json.Unmarshal(body, &keySet)
+    if err == nil {
+        return &keySet, nil
+    }
+    ct := r.Header.Get("Content-Type")
+    mediaType, _, parseErr := mime.ParseMediaType(ct)
+    if parseErr == nil && mediaType == "application/json" {
+        return nil, fmt.Errorf("got Content-Type = application/json, but could not unmarshal as JSON: %v", err)
+    }
+    return nil, fmt.Errorf("expected Content-Type = application/json, got %q: %v", ct, err)
 }
