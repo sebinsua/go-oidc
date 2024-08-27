@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -225,8 +224,9 @@ func (v *IDTokenVerifier) Verify(ctx context.Context, rawIDToken string) (*IDTok
 	if err != nil {
 		return nil, fmt.Errorf("oidc: malformed jwt: %v", err)
 	}
-	var token idToken
-	if err := json.Unmarshal(payload, &token); err != nil {
+	
+	token, err := parseIDToken(payload)
+	if err != nil {
 		return nil, fmt.Errorf("oidc: failed to unmarshal claims: %v", err)
 	}
 

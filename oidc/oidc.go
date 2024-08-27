@@ -13,6 +13,7 @@ import (
 	"io"
 	"mime"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -299,14 +300,52 @@ type UserInfo struct {
 	claims []byte
 }
 
-type userInfoRaw struct {
-	Subject string `json:"sub"`
-	Profile string `json:"profile"`
-	Email   string `json:"email"`
-	// Handle providers that return email_verified as a string
-	// https://forums.aws.amazon.com/thread.jspa?messageID=949441&#949441 and
-	// https://discuss.elastic.co/t/openid-error-after-authenticating-against-aws-cognito/206018/11
-	EmailVerified stringAsBool `json:"email_verified"`
+func parseUserInfo(data []byte) (*UserInfo, error) {
+    var raw map[string]json.RawMessage
+    if err := json.Unmarshal(data, &raw); err != nil {
+        return nil, fmt.Errorf("oidc: failed to unmarshal user info: %v", err)
+    }
+
+    userInfo := &UserInfo{claims: data}
+
+    if sub, ok := raw["sub"]; ok {
+        if err := json.Unmarshal(sub, &userInfo.Subject); err != nil {
+            return nil, fmt.Errorf("oidc: failed to parse 'sub' claim: %v", err)
+        }
+    }
+
+    if profile, ok := raw["profile"]; ok {
+        if err := json.Unmarshal(profile, &userInfo.Profile); err != nil {
+            return nil, fmt.Errorf("oidc: failed to parse 'profile' claim: %v", err)
+        }
+    }
+
+    if email, ok := raw["email"]; ok {
+        if err := json.Unmarshal(email, &userInfo.Email); err != nil {
+            return nil, fmt.Errorf("oidc: failed to parse 'email' claim: %v", err)
+        }
+    }
+
+    if emailVerified, ok := raw["email_verified"]; ok {
+        var emailVerifiedStr string
+        if err := json.Unmarshal(emailVerified, &emailVerifiedStr); err != nil {
+            // If it's not a string, try boolean
+            var emailVerifiedBool bool
+            if err := json.Unmarshal(emailVerified, &emailVerifiedBool); err != nil {
+                return nil, fmt.Errorf("oidc: failed to parse 'email_verified' claim: %v", err)
+            }
+            userInfo.EmailVerified = emailVerifiedBool
+        } else {
+            // It's a string, parse it as a boolean
+            emailVerifiedBool, err := strconv.ParseBool(emailVerifiedStr)
+            if err != nil {
+                return nil, fmt.Errorf("oidc: failed to parse 'email_verified' claim as boolean: %v", err)
+            }
+            userInfo.EmailVerified = emailVerifiedBool
+        }
+    }
+
+    return userInfo, nil
 }
 
 // Claims unmarshals the raw JSON object claims into the provided object.
@@ -357,17 +396,12 @@ func (p *Provider) UserInfo(ctx context.Context, tokenSource oauth2.TokenSource)
 		body = payload
 	}
 
-	var userInfo userInfoRaw
-	if err := json.Unmarshal(body, &userInfo); err != nil {
+	userInfo, err := parseUserInfo(body)
+	if err != nil {
 		return nil, fmt.Errorf("oidc: failed to decode userinfo: %v", err)
 	}
-	return &UserInfo{
-		Subject:       userInfo.Subject,
-		Profile:       userInfo.Profile,
-		Email:         userInfo.Email,
-		EmailVerified: bool(userInfo.EmailVerified),
-		claims:        body,
-	}, nil
+
+	return userInfo, nil
 }
 
 // IDToken is an OpenID Connect extension that provides a predictable representation
@@ -473,10 +507,10 @@ func (i *IDToken) VerifyAccessToken(accessToken string) error {
 type idToken struct {
 	Issuer       string                 `json:"iss"`
 	Subject      string                 `json:"sub"`
-	Audience     audience               `json:"aud"`
-	Expiry       jsonTime               `json:"exp"`
-	IssuedAt     jsonTime               `json:"iat"`
-	NotBefore    *jsonTime              `json:"nbf"`
+	Audience     []string               `json:"aud"`
+	Expiry       time.Time              `json:"exp"`
+	IssuedAt     time.Time              `json:"iat"`
+	NotBefore    *time.Time             `json:"nbf"`
 	Nonce        string                 `json:"nonce"`
 	AtHash       string                 `json:"at_hash"`
 	ClaimNames   map[string]string      `json:"_claim_names"`
@@ -488,56 +522,186 @@ type claimSource struct {
 	AccessToken string `json:"access_token"`
 }
 
-type stringAsBool bool
+// type stringAsBool bool
 
-func (sb *stringAsBool) UnmarshalJSON(b []byte) error {
-	switch string(b) {
-	case "true", `"true"`:
-		*sb = true
-	case "false", `"false"`:
-		*sb = false
-	default:
-		return errors.New("invalid value for boolean")
+// func (sb *stringAsBool) UnmarshalJSON(b []byte) error {
+// 	switch string(b) {
+// 	case "true", `"true"`:
+// 		*sb = true
+// 	case "false", `"false"`:
+// 		*sb = false
+// 	default:
+// 		return errors.New("invalid value for boolean")
+// 	}
+// 	return nil
+// }
+
+// type audience []string
+
+// func (a *audience) UnmarshalJSON(b []byte) error {
+// 	var s string
+// 	if json.Unmarshal(b, &s) == nil {
+// 		*a = audience{s}
+// 		return nil
+// 	}
+// 	var auds []string
+// 	if err := json.Unmarshal(b, &auds); err != nil {
+// 		return err
+// 	}
+// 	*a = auds
+// 	return nil
+// }
+
+// type jsonTime time.Time
+
+// func (j *jsonTime) UnmarshalJSON(b []byte) error {
+// 	var n json.Number
+// 	if err := json.Unmarshal(b, &n); err != nil {
+// 		return err
+// 	}
+// 	var unix int64
+
+// 	if t, err := n.Int64(); err == nil {
+// 		unix = t
+// 	} else {
+// 		f, err := n.Float64()
+// 		if err != nil {
+// 			return err
+// 		}
+// 		unix = int64(f)
+// 	}
+// 	*j = jsonTime(time.Unix(unix, 0))
+// 	return nil
+// }
+
+func parseIDToken(data []byte) (*idToken, error) {
+	var raw map[string]json.RawMessage
+	err := json.Unmarshal(data, &raw)
+	if err != nil {
+		return nil, err
 	}
-	return nil
+
+	token := &idToken{}
+
+	if iss, ok := raw["iss"]; ok {
+		err = json.Unmarshal(iss, &token.Issuer)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	if sub, ok := raw["sub"]; ok {
+		err = json.Unmarshal(sub, &token.Subject)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	if aud, ok := raw["aud"]; ok {
+		token.Audience, err = parseAudience(aud)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	if exp, ok := raw["exp"]; ok {
+		token.Expiry, err = parseJSONTime(exp)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	if iat, ok := raw["iat"]; ok {
+		token.IssuedAt, err = parseJSONTime(iat)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	if nbf, ok := raw["nbf"]; ok {
+		nbfTime, err := parseJSONTime(nbf)
+		if err != nil {
+			return nil, err
+		}
+		token.NotBefore = &nbfTime
+	}
+
+	if nonce, ok := raw["nonce"]; ok {
+		err = json.Unmarshal(nonce, &token.Nonce)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	if atHash, ok := raw["at_hash"]; ok {
+		err = json.Unmarshal(atHash, &token.AtHash)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	if claimNames, ok := raw["_claim_names"]; ok {
+		err = json.Unmarshal(claimNames, &token.ClaimNames)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	if claimSources, ok := raw["_claim_sources"]; ok {
+		err = json.Unmarshal(claimSources, &token.ClaimSources)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	return token, nil
 }
 
-type audience []string
-
-func (a *audience) UnmarshalJSON(b []byte) error {
+func parseAudience(data json.RawMessage) ([]string, error) {
 	var s string
-	if json.Unmarshal(b, &s) == nil {
-		*a = audience{s}
-		return nil
+	if err := json.Unmarshal(data, &s); err == nil {
+		return []string{s}, nil
 	}
+
 	var auds []string
-	if err := json.Unmarshal(b, &auds); err != nil {
-		return err
+	if err := json.Unmarshal(data, &auds); err != nil {
+		return nil, err
 	}
-	*a = auds
-	return nil
+	return auds, nil
 }
 
-type jsonTime time.Time
-
-func (j *jsonTime) UnmarshalJSON(b []byte) error {
+func parseJSONTime(data json.RawMessage) (time.Time, error) {
 	var n json.Number
-	if err := json.Unmarshal(b, &n); err != nil {
-		return err
+	if err := json.Unmarshal(data, &n); err != nil {
+		return time.Time{}, err
 	}
-	var unix int64
 
+	var unix int64
 	if t, err := n.Int64(); err == nil {
 		unix = t
 	} else {
 		f, err := n.Float64()
 		if err != nil {
-			return err
+			return time.Time{}, err
 		}
 		unix = int64(f)
 	}
-	*j = jsonTime(time.Unix(unix, 0))
-	return nil
+	return time.Unix(unix, 0), nil
+}
+
+func ParseStringAsBool(data json.RawMessage) (bool, error) {
+	var s string
+	if err := json.Unmarshal(data, &s); err != nil {
+		return false, err
+	}
+	switch s {
+	case "true":
+		return true, nil
+	case "false":
+		return false, nil
+	default:
+		return false, errors.New("invalid value for boolean")
+	}
 }
 
 func unmarshalResp(r *http.Response, body []byte, v interface{}) error {

@@ -157,6 +157,25 @@ func TestVerify(t *testing.T) {
 	}
 }
 
+func TestParseJwt(t *testing.T) {
+	tests := []verificationTest{
+		{
+			name:    "extra jwt",
+			idToken: `{"exp": 1724784474, "iat": 1724784174, "auth_time": 1724784174, "jti": "a762e725-2595-407a-bb50-3679b2a5ba8f", "iss": "http://keycloak.test.localhost:8080/realms/Test1", "aud": "nginx", "sub": "92e07bdb-4cc1-467a-a2ec-c00e933cf7ca", "typ": "ID", "azp": "nginx", "sid": "c8aea2e9-e6f2-4aef-948c-9b176966aa2b", "at_hash": "RSydMnnswWxWuzS26PbgIw", "email_verified": true, "name": "Test1", "preferred_username": "test1", "given_name": "Test1", "email": "test1@test.com"}`,
+			config: Config{
+				SkipIssuerCheck: true,
+				SkipClientIDCheck:          true,
+				SkipExpiryCheck:            true,
+				InsecureSkipSignatureCheck: true,
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, test.run)
+	}
+}
+
 func TestVerifyAudience(t *testing.T) {
 	tests := []verificationTest{
 		{
